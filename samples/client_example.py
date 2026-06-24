@@ -7,6 +7,10 @@ on the ``DBCommManager`` object become helpers here that call
 ``DeviceService.ReadDevice`` / ``WriteDevice`` on the server; the bit and 2-word
 (32-bit, signed) logic lives client-side, which is exactly the intended split.
 
+The word/bit/2-word composition mirrors ``kvcomplus_sila2.helpers`` (which does
+the same on a live COM object), reimplemented here over the SiLA client so the
+sample stays a self-contained client with no server-side import.
+
 Move sequence (per the Ardea signal proposal), mirroring kv_move_test.py:
   1. confirm the move-complete signal D6000.0 is ON (operable state)
   2. write target D5010 / speed D5020 / accel D5030 (2 words each)
