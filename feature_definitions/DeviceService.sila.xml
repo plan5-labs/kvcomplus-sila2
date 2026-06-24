@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Feature SiLA2Version="1.0" FeatureVersion="1.0" MaturityLevel="Draft" Originator="jp.riken" Category="kvcomplus"
+         xmlns="http://www.sila-standard.org"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://www.sila-standard.org https://gitlab.com/SiLA2/sila_base/raw/master/schema/FeatureDefinition.xsd">
+  <Identifier>DeviceService</Identifier>
+  <DisplayName>Device Service</DisplayName>
+  <Description>
+    Read and write a single PLC device word over the KEYENCE KV COM+ Library
+    (DBCommManager.ReadDevice / WriteDevice). The server is stateless: each
+    command opens a KV COM+ connection, performs the one-word operation, then
+    disconnects. Device type codes and device numbers are passed through to the
+    library unchanged; this feature is signal-agnostic and assigns no meaning to
+    particular addresses. Multi-word (e.g. 32-bit) values are reconstructed by
+    the client from consecutive single-word reads/writes.
+  </Description>
+
+  <!-- Commands -->
+  <Command>
+    <Identifier>ReadDevice</Identifier>
+    <DisplayName>Read Device</DisplayName>
+    <Description>
+      Read one device word via DBCommManager.ReadDevice(DeviceType, DeviceNumber).
+      Returns the raw word value as an integer.
+    </Description>
+    <Observable>No</Observable>
+    <Parameter>
+      <Identifier>DeviceType</Identifier>
+      <DisplayName>Device Type</DisplayName>
+      <Description>The KV COM+ device type code (e.g. 18 = DM for KV-8000).</Description>
+      <DataType>
+        <Basic>Integer</Basic>
+      </DataType>
+    </Parameter>
+    <Parameter>
+      <Identifier>DeviceNumber</Identifier>
+      <DisplayName>Device Number</DisplayName>
+      <Description>The device number, passed to the library as a string (e.g. "6010").</Description>
+      <DataType>
+        <Basic>String</Basic>
+      </DataType>
+    </Parameter>
+    <Response>
+      <Identifier>Value</Identifier>
+      <DisplayName>Value</DisplayName>
+      <Description>The word value returned by ReadDevice.</Description>
+      <DataType>
+        <Basic>Integer</Basic>
+      </DataType>
+    </Response>
+    <DefinedExecutionErrors>
+      <Identifier>ConnectionError</Identifier>
+      <Identifier>DeviceAccessError</Identifier>
+    </DefinedExecutionErrors>
+  </Command>
+
+  <Command>
+    <Identifier>WriteDevice</Identifier>
+    <DisplayName>Write Device</DisplayName>
+    <Description>
+      Write one device word via DBCommManager.WriteDevice(DeviceType, DeviceNumber, Value).
+    </Description>
+    <Observable>No</Observable>
+    <Parameter>
+      <Identifier>DeviceType</Identifier>
+      <DisplayName>Device Type</DisplayName>
+      <Description>The KV COM+ device type code (e.g. 18 = DM for KV-8000).</Description>
+      <DataType>
+        <Basic>Integer</Basic>
+      </DataType>
+    </Parameter>
+    <Parameter>
+      <Identifier>DeviceNumber</Identifier>
+      <DisplayName>Device Number</DisplayName>
+      <Description>The device number, passed to the library as a string (e.g. "5010").</Description>
+      <DataType>
+        <Basic>String</Basic>
+      </DataType>
+    </Parameter>
+    <Parameter>
+      <Identifier>Value</Identifier>
+      <DisplayName>Value</DisplayName>
+      <Description>The word value to write.</Description>
+      <DataType>
+        <Basic>Integer</Basic>
+      </DataType>
+    </Parameter>
+    <DefinedExecutionErrors>
+      <Identifier>ConnectionError</Identifier>
+      <Identifier>DeviceAccessError</Identifier>
+    </DefinedExecutionErrors>
+  </Command>
+
+  <!-- Command execution errors -->
+  <DefinedExecutionError>
+    <Identifier>ConnectionError</Identifier>
+    <DisplayName>Connection Error</DisplayName>
+    <Description>Failed to create the KV COM+ object or to connect to / communicate with the PLC.</Description>
+  </DefinedExecutionError>
+  <DefinedExecutionError>
+    <Identifier>DeviceAccessError</Identifier>
+    <DisplayName>Device Access Error</DisplayName>
+    <Description>The device read or write operation failed (e.g. invalid device type or number).</Description>
+  </DefinedExecutionError>
+</Feature>

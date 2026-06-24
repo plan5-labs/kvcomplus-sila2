@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+import "SiLAFramework.proto";
+
+package sila2.jp.riken.kvcomplus.deviceservice.v1;
+
+/* Read and write a single PLC device word over the KEYENCE KV COM+ Library (DBCommManager.ReadDevice / WriteDevice). The server is stateless: each command opens a KV COM+ connection, performs the one-word operation, then disconnects. Device type codes and device numbers are passed through to the library unchanged; this feature is signal-agnostic and assigns no meaning to particular addresses. Multi-word (e.g. 32-bit) values are reconstructed by the client from consecutive single-word reads/writes. */
+service DeviceService {
+  /* Read one device word via DBCommManager.ReadDevice(DeviceType, DeviceNumber). Returns the raw word value as an integer. */
+  rpc ReadDevice (sila2.jp.riken.kvcomplus.deviceservice.v1.ReadDevice_Parameters) returns (sila2.jp.riken.kvcomplus.deviceservice.v1.ReadDevice_Responses) {}
+  /* Write one device word via DBCommManager.WriteDevice(DeviceType, DeviceNumber, Value). */
+  rpc WriteDevice (sila2.jp.riken.kvcomplus.deviceservice.v1.WriteDevice_Parameters) returns (sila2.jp.riken.kvcomplus.deviceservice.v1.WriteDevice_Responses) {}
+}
+
+/* Parameters for ReadDevice */
+message ReadDevice_Parameters {
+  sila2.org.silastandard.Integer DeviceType = 1;  /* The KV COM+ device type code (e.g. 18 = DM for KV-8000). */
+  sila2.org.silastandard.String DeviceNumber = 2;  /* The device number, passed to the library as a string (e.g. "6010"). */
+}
+
+/* Responses of ReadDevice */
+message ReadDevice_Responses {
+  sila2.org.silastandard.Integer Value = 1;  /* The word value returned by ReadDevice. */
+}
+
+/* Parameters for WriteDevice */
+message WriteDevice_Parameters {
+  sila2.org.silastandard.Integer DeviceType = 1;  /* The KV COM+ device type code (e.g. 18 = DM for KV-8000). */
+  sila2.org.silastandard.String DeviceNumber = 2;  /* The device number, passed to the library as a string (e.g. "5010"). */
+  sila2.org.silastandard.Integer Value = 3;  /* The word value to write. */
+}
+
+/* Responses of WriteDevice */
+message WriteDevice_Responses {
+}

@@ -1,0 +1,13 @@
+# Example configuration for the KV COM+ SiLA2 server.
+# Copy to e.g. config.toml and adjust for your PLC, then start the server with:
+#   uv run python -m kvcomplus_sila2 --config config.toml --insecure
+
+[plc]
+peer = "192.168.0.10:8500"                # PLC connection target "IP:port" (required)
+plc_id = 545                              # PLC model id; 545 = DBPLC_DKV8K (KV-8000) (required)
+# progid is the KV COM+ DBCommManager COM ProgID; the default below is for KV-DH1L.
+progid = "DataBuilderAxLB.DBCommManager"  # COM ProgID (optional; default shown)
+
+[server]
+host = "0.0.0.0"          # SiLA server listen address
+port = 50052              # SiLA server listen port

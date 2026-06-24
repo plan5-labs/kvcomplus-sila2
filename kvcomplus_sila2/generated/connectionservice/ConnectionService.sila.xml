@@ -1,0 +1,53 @@
+<Feature xmlns="http://www.sila-standard.org" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Category="kvcomplus" FeatureVersion="1.0" MaturityLevel="Draft" Originator="jp.riken" SiLA2Version="1.0" xsi:schemaLocation="http://www.sila-standard.org https://gitlab.com/SiLA2/sila_base/raw/master/schema/FeatureDefinition.xsd">
+  <Identifier>ConnectionService</Identifier>
+  <DisplayName>Connection Service</DisplayName>
+  <Description>Check connectivity to the PLC over the KEYENCE KV COM+ Library. The server is
+    stateless: each command opens a KV COM+ connection, queries status, then
+    disconnects. Connection parameters come from the server configuration, not
+    from command parameters.</Description>
+  <!-- Commands -->
+  <Command>
+    <Identifier>GetMode</Identifier>
+    <DisplayName>Get Mode</DisplayName>
+    <Description>Connect to the PLC and return its operating mode via DBCommManager.GetMode
+      (RUN or PROGRAM). A successful response also confirms that the PLC is
+      reachable and the connection became active.</Description>
+    <Observable>No</Observable>
+    <Response>
+      <Identifier>Mode</Identifier>
+      <DisplayName>Mode</DisplayName>
+      <Description>The PLC operating mode.</Description>
+      <DataType>
+        <DataTypeIdentifier>OperatingMode</DataTypeIdentifier>
+      </DataType>
+    </Response>
+    <DefinedExecutionErrors>
+      <Identifier>ConnectionError</Identifier>
+    </DefinedExecutionErrors>
+  </Command>
+  <!-- Data type definitions -->
+  <DataTypeDefinition>
+    <Identifier>OperatingMode</Identifier>
+    <DisplayName>Operating Mode</DisplayName>
+    <Description>The PLC operating mode reported by GetMode: RUN or PROGRAM.</Description>
+    <DataType>
+      <Constrained>
+        <DataType>
+          <Basic>String</Basic>
+        </DataType>
+        <Constraints>
+          <Set>
+            <Value>RUN</Value>
+            <Value>PROGRAM</Value>
+          </Set>
+        </Constraints>
+      </Constrained>
+    </DataType>
+  </DataTypeDefinition>
+  <!-- Command execution errors -->
+  <DefinedExecutionError>
+    <Identifier>ConnectionError</Identifier>
+    <DisplayName>Connection Error</DisplayName>
+    <Description>Failed to create the KV COM+ object or to connect to / communicate with the PLC.</Description>
+  </DefinedExecutionError>
+</Feature>

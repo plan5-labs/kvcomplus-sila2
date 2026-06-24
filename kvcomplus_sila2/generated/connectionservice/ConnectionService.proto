@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+import "SiLAFramework.proto";
+
+package sila2.jp.riken.kvcomplus.connectionservice.v1;
+
+/* Check connectivity to the PLC over the KEYENCE KV COM+ Library. The server is stateless: each command opens a KV COM+ connection, queries status, then disconnects. Connection parameters come from the server configuration, not from command parameters. */
+service ConnectionService {
+  /* Connect to the PLC and return its operating mode via DBCommManager.GetMode (RUN or PROGRAM). A successful response also confirms that the PLC is reachable and the connection became active. */
+  rpc GetMode (sila2.jp.riken.kvcomplus.connectionservice.v1.GetMode_Parameters) returns (sila2.jp.riken.kvcomplus.connectionservice.v1.GetMode_Responses) {}
+}
+
+/* The PLC operating mode reported by GetMode: RUN or PROGRAM. */
+message DataType_OperatingMode {
+  sila2.org.silastandard.String OperatingMode = 1;  /* The PLC operating mode reported by GetMode: RUN or PROGRAM. */
+}
+
+/* Parameters for GetMode */
+message GetMode_Parameters {
+}
+
+/* Responses of GetMode */
+message GetMode_Responses {
+  sila2.jp.riken.kvcomplus.connectionservice.v1.DataType_OperatingMode Mode = 1;  /* The PLC operating mode. */
+}

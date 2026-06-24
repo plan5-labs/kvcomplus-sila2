@@ -1,0 +1,27 @@
+[project]
+name = "kvcomplus-sila2"
+version = "0.1.0"
+description = "SiLA2 server wrapping the KEYENCE KV COM+ Library (KV-DH1L) for KV series PLCs"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kazunari Kaizu" }]
+requires-python = ">=3.11"
+dependencies = [
+    "sila2[codegen]>=0.14.0",
+    "typer",
+    "pywin32; sys_platform == 'win32'",
+]
+
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["kvcomplus_sila2*"]
+
+[tool.setuptools.package-data]
+"kvcomplus_sila2.generated" = [
+    "*/*.sila.xml",
+    "*/*.proto",
+]
