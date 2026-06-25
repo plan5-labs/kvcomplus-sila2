@@ -48,8 +48,12 @@ class KvComError(Exception):
     """
 
 
-def _make_bridge(progid: str) -> Any:
+def _make_bridge(cfg: PlcConfig) -> Any:
     """Start the 32-bit bridge subprocess and return a connected client.
+
+    The connection target (``progid``, ``plc_id``, ``peer``) is forwarded once to
+    ``KvComServer32`` as constructor kwargs and held there for the bridge's
+    lifetime, so the per-operation methods carry only the device type/number.
 
     Imports ``msl-loadlib`` lazily and defines the ``Client64`` subclass here so
     the package can still be imported where msl-loadlib is absent (e.g. a
@@ -66,35 +70,36 @@ def _make_bridge(progid: str) -> Any:
 
     class _Bridge(Client64):
         def __init__(self) -> None:
-            # progid is forwarded to KvComServer32.__init__ as a kwarg (arrives
-            # as a string on the 32-bit side).
-            super().__init__(module32=_SERVER32_PATH, progid=progid)
+            # Connection params are forwarded to KvComServer32.__init__ as kwargs
+            # (they arrive as strings on the 32-bit side) and bound there once.
+            super().__init__(
+                module32=_SERVER32_PATH,
+                progid=cfg.progid,
+                plc_id=str(cfg.plc_id),
+                peer=cfg.peer,
+            )
 
-        def connect(self, plc_id, peer):
-            return self.request32("connect", plc_id, peer)
+        def connect(self):
+            return self.request32("connect")
 
         def disconnect(self):
             return self.request32("disconnect")
 
-        def read_device(self, plc_id, peer, device_type, device_number):
-            return self.request32(
-                "read_device", plc_id, peer, device_type, device_number
-            )
+        def read_device(self, device_type, device_number):
+            return self.request32("read_device", device_type, device_number)
 
-        def write_device(self, plc_id, peer, device_type, device_number, value):
-            return self.request32(
-                "write_device", plc_id, peer, device_type, device_number, value
-            )
+        def write_device(self, device_type, device_number, value):
+            return self.request32("write_device", device_type, device_number, value)
 
-        def get_mode(self, plc_id, peer):
-            return self.request32("get_mode", plc_id, peer)
+        def get_mode(self):
+            return self.request32("get_mode")
 
     try:
         return _Bridge()
     except Exception as e:  # pragma: no cover - bundled 32-bit server failed to start
         raise KvComError(
             "Failed to start the 32-bit KV COM+ bridge server "
-            f"(progid={progid!r}): {e!r}"
+            f"(progid={cfg.progid!r}): {e!r}"
         )
 
 
@@ -103,19 +108,27 @@ def _make_bridge(progid: str) -> Any:
 # from multiple threads.
 _lock = threading.Lock()
 _bridge: Optional[Any] = None
-_bridge_progid: Optional[str] = None
+# The (progid, plc_id, peer) the live bridge was bound to. The bridge holds one
+# persistent connection to one PLC, so a config naming a different target cannot
+# reuse it — surfaced as an error rather than silently rebinding the connection.
+_bridge_key: Optional[tuple] = None
+
+
+def _key_for(cfg: PlcConfig) -> tuple:
+    return (cfg.progid, int(cfg.plc_id), cfg.peer)
 
 
 def _bridge_for(cfg: PlcConfig) -> Any:
     """Return the shared bridge, creating it on first use. Caller holds ``_lock``."""
-    global _bridge, _bridge_progid
+    global _bridge, _bridge_key
+    key = _key_for(cfg)
     if _bridge is None:
-        _bridge = _make_bridge(cfg.progid)
-        _bridge_progid = cfg.progid
-    elif cfg.progid != _bridge_progid:
+        _bridge = _make_bridge(cfg)
+        _bridge_key = key
+    elif key != _bridge_key:
         raise KvComError(
-            f"KV COM+ bridge already started with progid {_bridge_progid!r}; "
-            f"cannot switch to {cfg.progid!r} without restarting the server."
+            f"KV COM+ bridge already started for {_bridge_key!r}; cannot switch to "
+            f"{key!r} (progid, plc_id, peer) without restarting the server."
         )
     return _bridge
 
@@ -130,7 +143,7 @@ def connect(cfg: PlcConfig) -> dict:
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            return bridge.connect(cfg.plc_id, cfg.peer)
+            return bridge.connect()
         except KvComError:
             raise
         except Exception as e:
@@ -145,11 +158,7 @@ def read_device(cfg: PlcConfig, device_type: int, device_number: str) -> int:
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            return int(
-                bridge.read_device(
-                    cfg.plc_id, cfg.peer, int(device_type), str(device_number)
-                )
-            )
+            return int(bridge.read_device(int(device_type), str(device_number)))
         except KvComError:
             raise
         except Exception as e:
@@ -163,9 +172,7 @@ def write_device(cfg: PlcConfig, device_type: int, device_number: str, value: in
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            bridge.write_device(
-                cfg.plc_id, cfg.peer, int(device_type), str(device_number), int(value)
-            )
+            bridge.write_device(int(device_type), str(device_number), int(value))
         except KvComError:
             raise
         except Exception as e:
@@ -180,7 +187,7 @@ def get_mode(cfg: PlcConfig) -> bool:
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            return bool(bridge.get_mode(cfg.plc_id, cfg.peer))
+            return bool(bridge.get_mode())
         except KvComError:
             raise
         except Exception as e:
@@ -189,7 +196,7 @@ def get_mode(cfg: PlcConfig) -> bool:
 
 def shutdown() -> None:
     """Disconnect and stop the 32-bit bridge subprocess. Safe to call repeatedly."""
-    global _bridge, _bridge_progid
+    global _bridge, _bridge_key
     with _lock:
         if _bridge is not None:
             try:
@@ -201,4 +208,4 @@ def shutdown() -> None:
             except Exception:
                 pass
             _bridge = None
-            _bridge_progid = None
+            _bridge_key = None

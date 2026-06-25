@@ -22,6 +22,13 @@ stateful connection no longer applies.
 If a held connection drops (network blip, PLC restart, session timeout), the
 operation methods reconnect once and retry, preserving stateless-like robustness.
 
+**Connection parameters are bound once.** A persistent connection targets exactly
+one PLC, so ``plc_id`` and ``peer`` are supplied once (as ``Server32`` constructor
+kwargs, forwarded from ``Client64`` at bridge creation) and held here. The device
+operations therefore take only the device type/number — they never carry, and can
+never silently rebind, the connection target. The 64-bit side enforces a matching
+``(progid, plc_id, peer)`` before reusing a bridge.
+
 This file is executed by ``msl-loadlib`` inside the 32-bit interpreter; it is not
 run directly and is never imported by the 64-bit process.
 """
@@ -48,25 +55,34 @@ class KvComServer32(Server32):
         super(KvComServer32, self).__init__(progid, "com", host, port)
         if site:
             sys.path.append(site)
+        # Connection target, bound once at bridge creation. A persistent
+        # connection addresses exactly one PLC, so these are held here rather
+        # than passed per operation. plc_id arrives as a string from Client64.
+        self._plc_id = int(kwargs["plc_id"]) if kwargs.get("plc_id") is not None else None
+        self._peer = kwargs.get("peer")
         self._connected = False
 
     # ---- connection lifecycle ----
 
-    def _open(self, plc_id, peer):
-        """Open the KV COM+ connection (raises ``RuntimeError`` if not active)."""
-        self.lib.PLC = int(plc_id)
-        self.lib.Peer = str(peer)
+    def _open(self):
+        """Open the held KV COM+ connection (raises ``RuntimeError`` if not active)."""
+        if self._plc_id is None or not self._peer:
+            raise RuntimeError(
+                "KV COM+ bridge was started without plc_id/peer; cannot connect."
+            )
+        self.lib.PLC = int(self._plc_id)
+        self.lib.Peer = str(self._peer)
         self.lib.Connect()
         if not bool(self.lib.Active):
             raise RuntimeError(
-                "Connect to %r returned but the connection is not active." % (peer,)
+                "Connect to %r returned but the connection is not active." % (self._peer,)
             )
         self._connected = True
 
-    def connect(self, plc_id, peer):
+    def connect(self):
         """Open and hold the connection (idempotent). Returns active flag + mode."""
         if not self._connected:
-            self._open(plc_id, peer)
+            self._open()
         return {
             "active": self._connected,
             "mode": "RUN" if bool(self.lib.GetMode) else "PROGRAM",
@@ -82,14 +98,14 @@ class KvComServer32(Server32):
             self._connected = False
         return True
 
-    def _run(self, plc_id, peer, fn):
+    def _run(self, fn):
         """Run ``fn`` on the open connection; reconnect once and retry on failure.
 
         The held connection can silently drop, so a single op failure is treated
         as a possibly-dead connection: reconnect and retry once before giving up.
         """
         if not self._connected:
-            self._open(plc_id, peer)
+            self._open()
         try:
             return fn()
         except Exception:
@@ -98,24 +114,23 @@ class KvComServer32(Server32):
                 self.lib.Disconnect()
             except Exception:
                 pass
-            self._open(plc_id, peer)  # if this fails, the error propagates
+            self._open()  # if this fails, the error propagates
             return fn()
 
     # ---- device operations (on the held connection) ----
 
-    def read_device(self, plc_id, peer, device_type, device_number):
+    def read_device(self, device_type, device_number):
         """Read one device word and return it as an int."""
         return self._run(
-            plc_id, peer,
             lambda: int(self.lib.ReadDevice(int(device_type), str(device_number))),
         )
 
-    def write_device(self, plc_id, peer, device_type, device_number, value):
+    def write_device(self, device_type, device_number, value):
         """Write one device word. Returns None."""
         def _w():
             self.lib.WriteDevice(int(device_type), str(device_number), int(value))
-        return self._run(plc_id, peer, _w)
+        return self._run(_w)
 
-    def get_mode(self, plc_id, peer):
+    def get_mode(self):
         """Return the PLC operating mode (True = RUN, False = PROGRAM)."""
-        return self._run(plc_id, peer, lambda: bool(self.lib.GetMode))
+        return self._run(lambda: bool(self.lib.GetMode))
