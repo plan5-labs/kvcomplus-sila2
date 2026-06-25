@@ -7,6 +7,9 @@ peer = "192.168.0.10:8500"                # PLC connection target "IP:port" (req
 plc_id = 545                              # PLC model id; 545 = DBPLC_DKV8K (KV-8000) (required)
 # progid is the KV COM+ DBCommManager COM ProgID; the default below is for KV-DH1L.
 progid = "DataBuilderAxLB.DBCommManager"  # COM ProgID (optional; default shown)
+# Timeouts that keep a wedged COM call from freezing the server (optional; defaults shown).
+op_timeout = 15.0                         # per-operation deadline [s]; on timeout the bridge is killed & rebuilt
+startup_timeout = 10.0                    # max wait for the 32-bit bridge subprocess to start [s]
 
 [server]
 host = "0.0.0.0"          # SiLA server listen address

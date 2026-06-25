@@ -28,19 +28,34 @@ DEFAULT_PROGID = "DataBuilderAxLB.DBCommManager"
 class PlcConfig:
     """KV COM+ connection parameters for the PLC.
 
-    The SiLA server is stateless: every command opens a fresh COM connection
-    using these parameters, performs the operation, and disconnects.
+    The COM object is hosted in a 32-bit bridge subprocess; the connection is
+    opened once and held for the server's lifetime (see
+    :mod:`kvcomplus_sila2.kvcomplus`). ``op_timeout`` / ``startup_timeout`` bound
+    how long a single operation, or bridge startup, may block before failing, so
+    a wedged COM call cannot freeze the server.
     """
 
     peer: str
     plc_id: int
     progid: str = DEFAULT_PROGID
+    # Per-operation deadline (seconds). Must comfortably exceed the worst-case
+    # held-connection op, including the lazy reconnect-and-retry in the bridge
+    # (a fresh COM Connect alone is ~2.3 s). On timeout the bridge subprocess is
+    # killed and rebuilt on the next call.
+    op_timeout: float = 15.0
+    # Max seconds to wait for the 32-bit bridge subprocess to start and accept a
+    # connection (passed to msl-loadlib's Client64).
+    startup_timeout: float = 10.0
 
     def __post_init__(self) -> None:
         if not self.peer:
             raise ConfigError("[plc].peer must not be empty.")
         if not self.progid:
             raise ConfigError("[plc].progid must not be empty.")
+        if self.op_timeout <= 0:
+            raise ConfigError("[plc].op_timeout must be a positive number of seconds.")
+        if self.startup_timeout <= 0:
+            raise ConfigError("[plc].startup_timeout must be a positive number of seconds.")
 
 
 @dataclass

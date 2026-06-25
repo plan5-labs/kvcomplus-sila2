@@ -23,6 +23,14 @@ connect lazily and transparently reconnect once if the held connection drops.
 A single ``Client64`` (and thus one 32-bit subprocess holding one COM connection)
 is created lazily and reused for the server's lifetime. Call :func:`shutdown` when
 the SiLA server stops; it disconnects and stops the subprocess.
+
+**Operation deadline.** ``msl-loadlib``'s ``request32`` has no timeout, and a COM
+call can block indefinitely; with all access serialized through one lock, a single
+wedged call would otherwise freeze every command. Each operation therefore runs
+under ``PlcConfig.op_timeout`` on a worker thread. If it overruns, the bridge
+subprocess is force-killed (which unblocks the wedged worker) and rebuilt on the
+next call, and the operation raises :class:`KvComError`. Bridge *startup* is bound
+separately by ``PlcConfig.startup_timeout`` (msl-loadlib's own connection timeout).
 """
 
 from __future__ import annotations
@@ -74,6 +82,7 @@ def _make_bridge(cfg: PlcConfig) -> Any:
             # (they arrive as strings on the 32-bit side) and bound there once.
             super().__init__(
                 module32=_SERVER32_PATH,
+                timeout=cfg.startup_timeout,
                 progid=cfg.progid,
                 plc_id=str(cfg.plc_id),
                 peer=cfg.peer,
@@ -133,6 +142,64 @@ def _bridge_for(cfg: PlcConfig) -> Any:
     return _bridge
 
 
+def _destroy_bridge_locked() -> None:
+    """Forcibly tear down the current bridge subprocess. Caller holds ``_lock``.
+
+    Kills the subprocess directly first: a bridge that timed out is typically
+    wedged inside a COM call, so its RPC channel is unresponsive and a graceful
+    ``shutdown_server32`` could itself block. Killing the process unblocks any
+    worker still waiting on the dead request. ``shutdown_server32`` is then called
+    best-effort to release msl-loadlib's connection/temp files.
+    """
+    global _bridge, _bridge_key
+    bridge = _bridge
+    _bridge = None
+    _bridge_key = None
+    if bridge is None:
+        return
+    proc = getattr(bridge, "_proc", None)  # private in msl-loadlib, guarded
+    if proc is not None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        bridge.shutdown_server32(kill_timeout=2)
+    except Exception:
+        pass
+
+
+def _invoke(bridge: Any, method: str, args: tuple, timeout: float) -> Any:
+    """Call ``bridge.<method>(*args)`` under ``timeout`` seconds. Caller holds ``_lock``.
+
+    Runs the RPC on a daemon worker thread because ``request32`` cannot be
+    interrupted. On overrun the bridge is destroyed (freeing the wedged worker)
+    and :class:`KvComError` is raised; otherwise the worker's result or exception
+    is propagated.
+    """
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            box["value"] = getattr(bridge, method)(*args)
+        except BaseException as e:  # propagate whatever the RPC/COM raised
+            box["error"] = e
+
+    worker = threading.Thread(target=_run, name=f"kvcom-{method}", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        _destroy_bridge_locked()
+        raise KvComError(
+            f"KV COM+ operation {method!r} timed out after {timeout:g}s "
+            "(no response from the bridge); the bridge was killed and will be "
+            "rebuilt on the next command."
+        )
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def connect(cfg: PlcConfig) -> dict:
     """Open and hold the KV COM+ connection (idempotent).
 
@@ -143,7 +210,7 @@ def connect(cfg: PlcConfig) -> dict:
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            return bridge.connect()
+            return _invoke(bridge, "connect", (), cfg.op_timeout)
         except KvComError:
             raise
         except Exception as e:
@@ -158,7 +225,12 @@ def read_device(cfg: PlcConfig, device_type: int, device_number: str) -> int:
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            return int(bridge.read_device(int(device_type), str(device_number)))
+            return int(
+                _invoke(
+                    bridge, "read_device",
+                    (int(device_type), str(device_number)), cfg.op_timeout,
+                )
+            )
         except KvComError:
             raise
         except Exception as e:
@@ -172,7 +244,10 @@ def write_device(cfg: PlcConfig, device_type: int, device_number: str, value: in
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            bridge.write_device(int(device_type), str(device_number), int(value))
+            _invoke(
+                bridge, "write_device",
+                (int(device_type), str(device_number), int(value)), cfg.op_timeout,
+            )
         except KvComError:
             raise
         except Exception as e:
@@ -187,25 +262,29 @@ def get_mode(cfg: PlcConfig) -> bool:
     with _lock:
         bridge = _bridge_for(cfg)
         try:
-            return bool(bridge.get_mode())
+            return bool(_invoke(bridge, "get_mode", (), cfg.op_timeout))
         except KvComError:
             raise
         except Exception as e:
             raise KvComError(f"GetMode failed: {e}")
 
 
+# Short cap on the graceful disconnect during shutdown; the subprocess is killed
+# afterwards regardless, so there is no reason to wait long.
+_DISCONNECT_TIMEOUT = 5.0
+
+
 def shutdown() -> None:
     """Disconnect and stop the 32-bit bridge subprocess. Safe to call repeatedly."""
-    global _bridge, _bridge_key
     with _lock:
-        if _bridge is not None:
-            try:
-                _bridge.disconnect()
-            except Exception:
-                pass
-            try:
-                _bridge.shutdown_server32()
-            except Exception:
-                pass
-            _bridge = None
-            _bridge_key = None
+        bridge = _bridge
+        if bridge is None:
+            return
+        # Best-effort graceful disconnect, but bounded: if it wedges, _invoke
+        # kills the bridge itself. Either way _destroy_bridge_locked then ensures
+        # the subprocess is gone and the globals are cleared.
+        try:
+            _invoke(bridge, "disconnect", (), _DISCONNECT_TIMEOUT)
+        except Exception:
+            pass
+        _destroy_bridge_locked()
