@@ -1,9 +1,17 @@
 # kvcomplus-sila2
 
 A **SiLA 2 server** that exposes KEYENCE PLC device access over the KV COM+
-Library (KV-DH1L), wrapping its `DBCommManager` ActiveX/COM component via
-[pywin32](https://github.com/mhammond/pywin32). The server is stateless: each
-command opens a KV COM+ connection, operates, and disconnects.
+Library (KV-DH1L), wrapping its `DBCommManager` ActiveX/COM component. The server
+is stateless: each command opens a KV COM+ connection, operates, and disconnects.
+
+`DBCommManager` is a **32-bit** COM component and cannot be loaded into the
+64-bit process the SiLA stack (grpcio, …) requires on Windows. The COM object
+therefore runs in a 32-bit helper process and is reached over RPC via
+[msl-loadlib](https://msl-loadlib.readthedocs.io/) — `Client64` on the 64-bit
+SiLA side ([`kvcomplus.py`](kvcomplus_sila2/kvcomplus.py)) talks to a `Server32`
+in the 32-bit interpreter ([`kvcomplus_server32.py`](kvcomplus_sila2/kvcomplus_server32.py)),
+whose bundled server includes comtypes (no pywin32 needed). The bridge process is
+long-lived; the COM connection itself is still opened and closed per command.
 
 The wrapper is intentionally **signal-agnostic** — it forwards the library's own
 `ReadDevice` / `WriteDevice` (one word at a time) and reports the PLC run mode.
@@ -27,8 +35,9 @@ signed int32), matching the existing `kv-scripts` behaviour.
 ## Requirements
 
 Windows with the **KV COM+ Library (KV-DH1L)** installed and COM-registered,
-Python >= 3.11, and [uv](https://docs.astral.sh/uv/). `pywin32` is installed
-automatically on Windows.
+Python >= 3.11 (64-bit), and [uv](https://docs.astral.sh/uv/). `msl-loadlib`
+(installed automatically) ships the 32-bit helper that hosts the COM object, so
+**no separate 32-bit Python install is required**.
 
 ## Setup
 

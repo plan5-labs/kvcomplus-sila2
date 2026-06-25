@@ -54,3 +54,13 @@ class Server(SilaServer):
 
         self.connectionservice = ConnectionServiceImpl(self)
         self.set_feature_implementation(ConnectionServiceFeature, self.connectionservice)
+
+    def stop(self, *args, **kwargs):
+        # Shut down the 32-bit KV COM+ bridge subprocess (if it was ever started)
+        # after the gRPC server has stopped accepting commands.
+        try:
+            return super().stop(*args, **kwargs)
+        finally:
+            from .kvcomplus import shutdown
+
+            shutdown()

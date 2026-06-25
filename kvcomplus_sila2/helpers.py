@@ -2,20 +2,24 @@
 
 These are intentionally NOT used by the bare DeviceService feature (which only
 forwards the library's single-word ReadDevice/WriteDevice). They are provided
-for higher-level callers — e.g. an orchestration server such as ardea-sila2 —
-that open a single connection and then perform many word/bit/2-word operations
-against the live ``DBCommManager`` object.
+for higher-level orchestration that opens a single connection and then performs
+many word/bit/2-word operations against a live ``DBCommManager`` object.
 
-All functions operate on a live ``mgr`` object as yielded by
-:func:`kvcomplus_sila2.kvcomplus.plc_session`, so one connection can serve a
-whole sequence of operations::
+Each function operates on a live ``mgr`` object — any object exposing KV COM+'s
+``ReadDevice`` / ``WriteDevice`` (e.g. ``Server32.lib`` in
+:mod:`kvcomplus_sila2.kvcomplus_server32`). Because the ``DBCommManager`` COM
+object is 32-bit and lives only inside the 32-bit bridge subprocess (it cannot
+cross the msl-loadlib RPC boundary as a live object), **this logic must run on
+the 32-bit side**, inside a ``Server32`` method — not on the 64-bit SiLA side.
+Issuing one RPC per word would also be far too slow for loops/polling, so any
+sequence (e.g. a move with position polling) belongs in a single ``Server32``
+method that calls these helpers locally and returns only the result::
 
-    from kvcomplus_sila2.kvcomplus import plc_session
+    # inside a Server32 subclass method, running in the 32-bit interpreter:
     from kvcomplus_sila2 import helpers
 
-    with plc_session(cfg) as mgr:
-        pos = helpers.read_dword(mgr, 18, 6010)   # signed 32-bit from DM 6010/6011
-        helpers.write_bit(mgr, 18, 5000, 0, True)  # set D5000.0
+    pos = helpers.read_dword(self.lib, 18, 6010)   # signed 32-bit from DM 6010/6011
+    helpers.write_bit(self.lib, 18, 5000, 0, True)  # set D5000.0
 
 2-word values follow the convention confirmed on the KV-8000: the low 16 bits
 live at the address and the high 16 bits at address + 1, interpreted as a signed

@@ -1,91 +1,112 @@
-"""Stateless KV COM+ execution helpers.
+"""KV COM+ device access, bridged from 64-bit to a 32-bit subprocess.
 
-The SiLA server keeps no session state between commands. Every operation
-initializes COM on the calling thread, creates the KV COM+ ``DBCommManager``
-object, connects to the PLC, performs the operation, then disconnects and
-uninitializes COM. These helpers encapsulate that ``CoInitialize -> Dispatch ->
-Connect -> operate -> Disconnect -> CoUninitialize`` lifecycle so the feature
-implementations can stay focused on data conversion.
+The KV COM+ Library ``DBCommManager`` is a **32-bit** in-process COM component
+and cannot be loaded into a 64-bit process, while the SiLA stack (grpcio, ...) is
+effectively 64-bit-only on Windows. To run both, the COM object lives in a 32-bit
+helper process and this module reaches it over RPC using `msl-loadlib
+<https://msl-loadlib.readthedocs.io/>`_ (``Client64`` here, ``Server32`` in
+:mod:`kvcomplus_sila2.kvcomplus_server32`). See ``external/kv-scripts/64bit化方針.md``
+for the rationale.
 
-The connection is held only for the duration of a single operation (a single
-``with`` block); no COM object or socket survives between calls. This mirrors
-the stateless design of bcap-sila2.
+The public surface is unchanged from the original in-process implementation:
+:func:`read_device`, :func:`write_device`, :func:`get_mode`, and the
+:class:`KvComError` exception. Feature implementations, ``server.py`` and
+``config.py`` therefore need no changes. Each call still has stateless,
+connect-per-operation semantics (the 32-bit side opens and closes the COM
+connection for every operation); only the bridge *process* is long-lived.
 
-KV COM+ is a Windows-only ActiveX/COM component driven via pywin32, so this
-module imports ``pythoncom`` / ``win32com.client`` lazily inside the session so
-the package can at least be imported on non-Windows machines.
+A single ``Client64`` (and thus one 32-bit subprocess) is created lazily on first
+use and reused for the server's lifetime, because starting the 32-bit server
+costs a few seconds. Call :func:`shutdown` when the SiLA server stops.
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import Any, Iterator
+import os
+import threading
+from typing import Any, Optional
 
 from .config import PlcConfig
+
+# Path to the 32-bit server module, executed inside msl-loadlib's bundled 32-bit
+# interpreter. Passing the absolute file path avoids relying on the 32-bit
+# server's sys.path resolution.
+_SERVER32_PATH = os.path.join(os.path.dirname(__file__), "kvcomplus_server32.py")
 
 
 class KvComError(Exception):
     """Raised when a KV COM+ connection or device operation fails.
 
-    Wraps the underlying ``pythoncom.com_error`` (and import/availability
-    errors) so feature implementations can catch a single, library-agnostic
-    exception type.
+    Wraps the underlying bridge/COM failure (msl-loadlib ``Server32Error``,
+    comtypes errors, or an unavailable bridge) so feature implementations can
+    catch a single, library-agnostic exception type.
     """
 
 
-@contextmanager
-def plc_session(cfg: PlcConfig) -> Iterator[Any]:
-    """Open a KV COM+ connection to the PLC for the duration of the block.
+def _make_bridge(progid: str) -> Any:
+    """Start the 32-bit bridge subprocess and return a connected client.
 
-    On entry: initialize COM on this thread, create the ``DBCommManager`` COM
-    object, set the PLC model id and peer, and connect. On exit: disconnect and
-    uninitialize COM. Yields the connected ``DBCommManager`` object.
-
-    Raises :class:`KvComError` if COM is unavailable, the object cannot be
-    created, or the connection does not become active.
+    Imports ``msl-loadlib`` lazily and defines the ``Client64`` subclass here so
+    the package can still be imported where msl-loadlib is absent (e.g. a
+    non-Windows dev machine); the dependency is only required to actually talk to
+    the PLC.
     """
     try:
-        import pythoncom
-        import win32com.client
-    except ImportError as e:  # pragma: no cover - non-Windows / no pywin32
+        from msl.loadlib import Client64
+    except ImportError as e:  # pragma: no cover - msl-loadlib not installed
         raise KvComError(
-            "KV COM+ requires Windows with pywin32 installed: " + str(e)
+            "msl-loadlib is required to bridge to the 32-bit KV COM+ component: "
+            + str(e)
         )
 
-    pythoncom.CoInitialize()
-    mgr = None
-    connected = False
+    class _Bridge(Client64):
+        def __init__(self) -> None:
+            # progid is forwarded to KvComServer32.__init__ as a kwarg (arrives
+            # as a string on the 32-bit side).
+            super().__init__(module32=_SERVER32_PATH, progid=progid)
+
+        def read_device_once(self, plc_id, peer, device_type, device_number):
+            return self.request32(
+                "read_device_once", plc_id, peer, device_type, device_number
+            )
+
+        def write_device_once(self, plc_id, peer, device_type, device_number, value):
+            return self.request32(
+                "write_device_once", plc_id, peer, device_type, device_number, value
+            )
+
+        def get_mode_once(self, plc_id, peer):
+            return self.request32("get_mode_once", plc_id, peer)
+
     try:
-        try:
-            mgr = win32com.client.Dispatch(cfg.progid)
-        except pythoncom.com_error as e:
-            raise KvComError(
-                f"Failed to create KV COM+ object {cfg.progid!r}: {e}"
-            )
+        return _Bridge()
+    except Exception as e:  # pragma: no cover - bundled 32-bit server failed to start
+        raise KvComError(
+            "Failed to start the 32-bit KV COM+ bridge server "
+            f"(progid={progid!r}): {e!r}"
+        )
 
-        try:
-            mgr.PLC = cfg.plc_id
-            mgr.Peer = cfg.peer
-            mgr.Connect()
-        except pythoncom.com_error as e:
-            raise KvComError(f"Failed to connect to PLC at {cfg.peer!r}: {e}")
 
-        if not bool(mgr.Active):
-            raise KvComError(
-                f"Connect to {cfg.peer!r} returned but the connection is not active."
-            )
-        connected = True
+# A single bridge process serves all commands; serialize access because the
+# 32-bit RPC server handles one request at a time and the gRPC server may call in
+# from multiple threads.
+_lock = threading.Lock()
+_bridge: Optional[Any] = None
+_bridge_progid: Optional[str] = None
 
-        yield mgr
-    finally:
-        if mgr is not None and connected:
-            try:
-                mgr.Disconnect()
-            except Exception:
-                pass
-        # Drop the only reference before uninitializing COM.
-        del mgr
-        pythoncom.CoUninitialize()
+
+def _bridge_for(cfg: PlcConfig) -> Any:
+    """Return the shared bridge, creating it on first use. Caller holds ``_lock``."""
+    global _bridge, _bridge_progid
+    if _bridge is None:
+        _bridge = _make_bridge(cfg.progid)
+        _bridge_progid = cfg.progid
+    elif cfg.progid != _bridge_progid:
+        raise KvComError(
+            f"KV COM+ bridge already started with progid {_bridge_progid!r}; "
+            f"cannot switch to {cfg.progid!r} without restarting the server."
+        )
+    return _bridge
 
 
 def read_device(cfg: PlcConfig, device_type: int, device_number: str) -> int:
@@ -93,9 +114,16 @@ def read_device(cfg: PlcConfig, device_type: int, device_number: str) -> int:
 
     ``device_number`` is passed to the library as a string, as KV COM+ requires.
     """
-    with plc_session(cfg) as mgr:
+    with _lock:
+        bridge = _bridge_for(cfg)
         try:
-            return int(mgr.ReadDevice(device_type, str(device_number)))
+            return int(
+                bridge.read_device_once(
+                    cfg.plc_id, cfg.peer, int(device_type), str(device_number)
+                )
+            )
+        except KvComError:
+            raise
         except Exception as e:
             raise KvComError(
                 f"ReadDevice(type={device_type}, number={device_number!r}) failed: {e}"
@@ -104,9 +132,14 @@ def read_device(cfg: PlcConfig, device_type: int, device_number: str) -> int:
 
 def write_device(cfg: PlcConfig, device_type: int, device_number: str, value: int) -> None:
     """Write one device word via WriteDevice."""
-    with plc_session(cfg) as mgr:
+    with _lock:
+        bridge = _bridge_for(cfg)
         try:
-            mgr.WriteDevice(device_type, str(device_number), int(value))
+            bridge.write_device_once(
+                cfg.plc_id, cfg.peer, int(device_type), str(device_number), int(value)
+            )
+        except KvComError:
+            raise
         except Exception as e:
             raise KvComError(
                 f"WriteDevice(type={device_type}, number={device_number!r}, "
@@ -116,8 +149,24 @@ def write_device(cfg: PlcConfig, device_type: int, device_number: str, value: in
 
 def get_mode(cfg: PlcConfig) -> bool:
     """Connect and return the PLC operating mode (True = RUN, False = PROGRAM)."""
-    with plc_session(cfg) as mgr:
+    with _lock:
+        bridge = _bridge_for(cfg)
         try:
-            return bool(mgr.GetMode)
+            return bool(bridge.get_mode_once(cfg.plc_id, cfg.peer))
+        except KvComError:
+            raise
         except Exception as e:
             raise KvComError(f"GetMode failed: {e}")
+
+
+def shutdown() -> None:
+    """Stop the 32-bit bridge subprocess if it is running. Safe to call repeatedly."""
+    global _bridge, _bridge_progid
+    with _lock:
+        if _bridge is not None:
+            try:
+                _bridge.shutdown_server32()
+            except Exception:
+                pass
+            _bridge = None
+            _bridge_progid = None

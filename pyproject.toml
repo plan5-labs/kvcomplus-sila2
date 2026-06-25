@@ -10,7 +10,11 @@ requires-python = ">=3.11"
 dependencies = [
     "sila2[codegen]>=0.14.0",
     "typer",
-    "pywin32; sys_platform == 'win32'",
+    # The KV COM+ DBCommManager is a 32-bit COM component; it is loaded in a
+    # 32-bit helper process and reached over RPC. msl-loadlib provides the
+    # Client64/Server32 bridge (its bundled 32-bit server includes comtypes, so
+    # pywin32 is not needed). The bundled server is Windows-only.
+    "msl-loadlib>=0.10.0",
 ]
 
 [build-system]
