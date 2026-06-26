@@ -21,6 +21,9 @@ stateful connection no longer applies.
 
 If a held connection drops (network blip, PLC restart, session timeout), the
 operation methods reconnect once and retry, preserving stateless-like robustness.
+The reconnect is gated on the library's ``Active`` flag: a failure on a still-live
+session is a request error (bad device number/type/value), so it is propagated
+as-is instead of needlessly tearing down and rebuilding a healthy connection.
 
 **Connection parameters are bound once.** A persistent connection targets exactly
 one PLC, so ``plc_id`` and ``peer`` are supplied once (as ``Server32`` constructor
@@ -98,24 +101,49 @@ class KvComServer32(Server32):
             self._connected = False
         return True
 
-    def _run(self, fn):
-        """Run ``fn`` on the open connection; reconnect once and retry on failure.
+    def _still_active(self):
+        """Best-effort liveness check: True if the held session still reports Active.
 
-        The held connection can silently drop, so a single op failure is treated
-        as a possibly-dead connection: reconnect and retry once before giving up.
+        Reading ``Active`` on a dead session may itself raise; any failure is
+        treated as "not active" so the caller falls through to reconnect.
+        """
+        try:
+            return bool(self.lib.Active)
+        except Exception:
+            return False
+
+    def _run(self, fn):
+        """Run ``fn`` on the open connection, reconnecting only if it truly dropped.
+
+        The held connection can silently drop (network blip, PLC restart, session
+        timeout), so on failure we reconnect once and retry. But many failures are
+        *request* errors (bad device number/type/value) on a perfectly live
+        session: reconnecting cannot fix those and would needlessly tear down a
+        healthy connection and double the latency. So the reconnect is gated on
+        ``Active``: if the session still reports active, the failure is a request
+        error and is propagated as-is. If the reconnect or retry then fails, the
+        *original* error is surfaced rather than masking it with the second one.
         """
         if not self._connected:
             self._open()
         try:
             return fn()
-        except Exception:
+        except Exception as first_error:
+            if self._still_active():
+                # Live session -> this is a request error, not a dropped
+                # connection. Do not reconnect; report the real failure.
+                raise
+            # Session looks dead: reconnect once and retry.
             self._connected = False
             try:
                 self.lib.Disconnect()
             except Exception:
                 pass
-            self._open()  # if this fails, the error propagates
-            return fn()
+            try:
+                self._open()
+                return fn()
+            except Exception:
+                raise first_error
 
     # ---- device operations (on the held connection) ----
 
