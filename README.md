@@ -78,4 +78,4 @@ uv run python samples/client_example.py --host 127.0.0.1 --port 50052
 
 ## License
 
-[MIT](LICENSE) © 2026 Kazunari Kaizu
+[MIT](LICENSE) © 2026 RIKEN
