@@ -42,7 +42,7 @@ Python >= 3.11 (64-bit), and [uv](https://docs.astral.sh/uv/). `msl-loadlib`
 ## Setup
 
 ```bash
-git clone git@github.com:kaizu/kvcomplus-sila2.git
+git clone https://github.com/plan5-labs/kvcomplus-sila2.git
 cd kvcomplus-sila2
 uv sync
 ```
